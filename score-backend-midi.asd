@@ -1,11 +1,11 @@
 (defsystem "score-backend-midi"
-  :version "0.1.0"
+  :version "0.1.1"
   :description "Standard MIDI File export and import for score-protocol: tracks and channels per voice, tempo map, lyrics, chord text, unfolded repeats, rehearsal mixes; quantisation through sat-protocol, spelling through music-theory"
   :author "egao1980"
   :license "MIT"
   :depends-on ((:version "score-protocol" "0.2.0")
                (:version "midi-protocol" "0.1.0")
-               (:version "music-theory" "0.5.0")
+               (:version "music-theory" "0.5.2")
                (:version "sat-protocol" "0.2.0")
                "sat-backend-cdcl"
                ;; score-protocol returns FSet seqs; read through fset: directly
@@ -34,6 +34,7 @@
                (:file "import-test")
                (:file "performance-test")
                (:file "spelling-test")
+               (:file "sc41-test")
                (:file "mido-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)

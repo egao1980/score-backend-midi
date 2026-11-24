@@ -61,7 +61,7 @@ so score-protocol:uncertain-elements is the uncertainty report.")
    #:+default-volume+ #:+default-pan+ #:+dynamic-velocities+
    #:+chord-text-prefix+ #:+subdivisions+ #:+grid-weights+ #:+tuplet-ratios+
    #:+export-losses+ #:+import-losses+ #:+flag-below+ #:+guess-confidence+
-   #:+provenance-backend+
+   #:+provenance-backend+ #:+spelling-rule-confidence+
    ;; Export (export.lisp, mix.lisp)
    #:score-to-smf #:export-midi
    #:rehearsal-mix #:rehearsal-set
@@ -71,3 +71,8 @@ so score-protocol:uncertain-elements is the uncertainty report.")
    #:smf-to-score #:import-midi))
 
 (in-package #:score-backend-midi)
+
+(defun %sc41-pending (name)
+  "Contract stub for 0.1.1 (issues #3 and #4). Every call is replaced by the
+implementation, then this function is deleted."
+  (error "score-backend-midi 0.1.1 pending: ~A" name))

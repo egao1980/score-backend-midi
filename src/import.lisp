@@ -41,7 +41,13 @@
 ;;;; confidence) is 1.
 ;;;; Snapped: (quantize-onsets S beats ...), S the voice's distinct starts in
 ;;;; ascending order: POSITIONS are the new starts and CONFIDENCES each start's
-;;;; q. The voice is single-line when no two of its notes then share a start.
+;;;; q. Late starts (0.1.1, issue #3): a start snapped to E (only the end of
+;;;; the last beat can be; no bar holds it) moves back to the last point below
+;;;; E of that beat's grid (quantize.lisp, Grid: for the beat's choice s, the
+;;;; greatest START + k * UNIT/s below E), and its q becomes the least of q and
+;;;; +GUESS-CONFIDENCE+. The note stays in the last bar and is flagged; the
+;;;; measure map never grows past E. Everything below reads the moved starts.
+;;;; The voice is single-line when no two of its notes then share a start.
 ;;;; A note's end: in a single-line voice first cut to the note's next start
 ;;;; (the next greater snapped start of the voice, or E); then snapped to the
 ;;;; grid its beat chose (quantize.lisp, Grid; an end at E stays E); when that
@@ -77,10 +83,34 @@
 ;;;; key, are split into runs of consecutive notes whose starts lie in bars of
 ;;;; one key (BAR-KEY); each run is spelled by (spell-sequence keys :key that
 ;;;; key), and all pieces of a note carry its pitch (ACCIDENTAL :AUTO).
-;;;; AMBIGUOUS-SPELLING reaches the caller with music-theory's restarts. A
-;;;; note's spelling confidence sp is 1 when its pitch is in the key (DEGREE-OF
-;;;; gives alteration 0 for the :NATURAL or the :HARMONIC variant), else
-;;;; 1 - its ambiguity.
+;;;; AMBIGUOUS-SPELLING reaches the caller with music-theory's restarts.
+;;;;
+;;;; Spelling confidence (0.1.1, issue #4). SPELL-SEQUENCE (music-theory 0.5.2,
+;;;; music-theory#19) returns three values; for each note of the run they give
+;;;; its pitch, its ambiguity a (0 to 1) and R, the keyword of the rule that
+;;;; decided it (:S0 .. :S7 of music-theory's spell.lisp header). The note's
+;;;; spelling confidence sp is set in run order from R's entry in
+;;;; +SPELLING-RULE-CONFIDENCE+:
+;;;;   1           R :S1 (a note of the key), :S2 (one side: the other
+;;;;               spelling would need three accidentals) or :S4 (a semitone
+;;;;               resolution to the next note);
+;;;;   :COPIED     R :S0 (a repeated note) or :S3 (consistency): the sp of the
+;;;;               note whose spelling R takes, the latest note before it in
+;;;;               the run with its pitch class (for :S0 the note just before);
+;;;;   :BEFORE     R :S5 (interval): the sp of the note just before it in the
+;;;;               run, the one the interval is measured from;
+;;;;   :AMBIGUITY  R :S6 (center) or :S7 (tie): 1 - a, whatever a handler of
+;;;;               AMBIGUOUS-SPELLING chose.
+;;;; So a chromatic note that a rule settles is as certain as the notes the
+;;;; rule leans on, and only a spelling that the center decides carries its
+;;;; ambiguity. In D major 62 66 67 68 69 is D4 F#4 G4 G#4 A4, every sp 1 (G#4
+;;;; by :S4; 0.1.0 gave it 1 - 43/60). In C major 60 66 60 66 60 is C4 F#4 C4
+;;;; F#4 C4 with sp 1 7/24 1 7/24 1: the first F#4 by :S6 at a = 17/24, the
+;;;; second copies it by :S3. A settled spelling is trusted as music-theory
+;;;; gives it; where its rules miss (music-theory#18) the note is not flagged.
+;;;; :S1 replaces 0.1.0's scale test (DEGREE-OF, natural or harmonic): it is
+;;;; music-theory's N, so in minor the raised sixth counts too (A minor 64 66
+;;;; 68 69, E4 F#4 G#4 A4: every sp 1; 0.1.0 gave F#4 25/48).
 ;;;;
 ;;;; Confidence. A note event: min(q, sp) of its note. A chord event: the least
 ;;;; q of the notes that start at its onset, or of all its notes when none
@@ -238,6 +268,13 @@ the later end, the earlier note's Q and tick. Sorted by start, then key."
                                    (and (= (%line-start a) (%line-start b))
                                         (< (%line-key a) (%line-key b))))))))
 
+(defun %late-starts (positions confidences beats choices e)
+  "(values POSITIONS CONFIDENCES), fresh lists, with every position at E moved
+back to the last point below E of the last beat's grid and its confidence at
+most +GUESS-CONFIDENCE+ (Quantisation, Late starts)."
+  (declare (ignorable positions confidences beats choices e))
+  (%sc41-pending '%late-starts))
+
 (defun %voice-lines (notes beats e division quantize subdivisions backend)
   "(values LINES CHOICES): the voice's NOTES quantised (Quantisation), and the
 grid choice of every beat (NIL with QUANTIZE NIL)."
@@ -259,6 +296,9 @@ grid choice of every beat (NIL with QUANTIZE NIL)."
         (let ((distinct (%distinct-ascending starts)))
           (multiple-value-bind (choices positions confidences)
               (quantize-onsets distinct beats :subdivisions subdivisions :backend backend)
+            (when (member e positions)
+              (setf (values positions confidences)
+                    (%late-starts positions confidences beats choices e)))
             (let* ((snapped (mapcar (lambda (start) (nth (position start distinct) positions)) starts))
                    (qs (mapcar (lambda (start) (nth (position start distinct) confidences)) starts))
                    (single (= (length snapped) (length (remove-duplicates snapped)))))
@@ -298,18 +338,19 @@ MUSIC-THEORY:SPELL-SEQUENCE, one call per run of one key (Spelling)."
             (push (list key line) runs))))
     (dolist (run (nreverse runs))
       (let ((key (car run)) (run-lines (reverse (cdr run))))
-        (multiple-value-bind (pitches ambiguities)
+        (multiple-value-bind (pitches ambiguities rules)
             (music-theory:spell-sequence (mapcar #'%line-key run-lines) :key key)
           (loop for line in run-lines
                 for pitch in pitches
-                for ambiguity in ambiguities
-                do (setf (%line-pitch line) pitch
-                         (%line-sp line)
-                         (if (or (zerop (nth-value 1 (music-theory:degree-of pitch key)))
-                                 (zerop (nth-value 1 (music-theory:degree-of pitch key
-                                                                             :variant :harmonic))))
-                             1
-                             (- 1 ambiguity)))))))))
+                do (setf (%line-pitch line) pitch))
+          (%spelling-confidences run-lines ambiguities rules))))))
+
+(defun %spelling-confidences (lines ambiguities rules)
+  "Set the SP of LINES, the notes of one SPELL-SEQUENCE call in its order, from
+each note's AMBIGUITIES and deciding RULES through +SPELLING-RULE-CONFIDENCE+
+(Spelling confidence)."
+  (declare (ignorable lines ambiguities rules))
+  (%sc41-pending '%spelling-confidences))
 
 ;;; Events -------------------------------------------------------------------------------
 

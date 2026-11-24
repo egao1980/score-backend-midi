@@ -272,8 +272,12 @@ the later end, the earlier note's Q and tick. Sorted by start, then key."
   "(values POSITIONS CONFIDENCES), fresh lists, with every position at E moved
 back to the last point below E of the last beat's grid and its confidence at
 most +GUESS-CONFIDENCE+ (Quantisation, Late starts)."
-  (declare (ignorable positions confidences beats choices e))
-  (%sc41-pending '%late-starts))
+  ;; LATE: the second-to-last point of the last beat's grid for that beat's
+  ;; own choice s (quantize.lisp, Grid), the greatest START + k * UNIT/s below E.
+  (let ((late (first (last (%grid-points (car (last beats)) (car (last choices))) 2))))
+    (values (mapcar (lambda (p) (if (= p e) late p)) positions)
+            (mapcar (lambda (p q) (if (= p e) (min q +guess-confidence+) q))
+                    positions confidences))))
 
 (defun %voice-lines (notes beats e division quantize subdivisions backend)
   "(values LINES CHOICES): the voice's NOTES quantised (Quantisation), and the
@@ -345,12 +349,38 @@ MUSIC-THEORY:SPELL-SEQUENCE, one call per run of one key (Spelling)."
                 do (setf (%line-pitch line) pitch))
           (%spelling-confidences run-lines ambiguities rules))))))
 
+(defun %spelling-rule-source (rule)
+  "RULE's entry in +SPELLING-RULE-CONFIDENCE+ (Spelling confidence); a TYPE-ERROR
+for a keyword the table does not list."
+  (let ((cell (assoc rule +spelling-rule-confidence+)))
+    (unless cell
+      (error 'type-error :datum rule
+                         :expected-type `(member ,@(mapcar #'car +spelling-rule-confidence+))))
+    (cdr cell)))
+
 (defun %spelling-confidences (lines ambiguities rules)
   "Set the SP of LINES, the notes of one SPELL-SEQUENCE call in its order, from
 each note's AMBIGUITIES and deciding RULES through +SPELLING-RULE-CONFIDENCE+
 (Spelling confidence)."
-  (declare (ignorable lines ambiguities rules))
-  (%sc41-pending '%spelling-confidences))
+  ;; One forward pass: every note a rule leans on comes earlier in the call.
+  ;; LATEST holds, per pitch class, the sp of the latest note so far with it
+  ;; (:COPIED, music-theory's S0/S3 note); BEFORE the sp of the note just
+  ;; before (:BEFORE, S5).
+  (let ((latest (make-array 12 :initial-element nil))
+        (before nil))
+    (loop for line in lines
+          for a in ambiguities
+          for rule in rules
+          for pc = (mod (%line-key line) 12)
+          for source = (%spelling-rule-source rule)
+          for sp = (etypecase source
+                     (rational source)
+                     ((eql :copied) (svref latest pc))
+                     ((eql :before) before)
+                     ((eql :ambiguity) (- 1 a)))
+          do (setf (%line-sp line) sp
+                   (svref latest pc) sp
+                   before sp))))
 
 ;;; Events -------------------------------------------------------------------------------
 

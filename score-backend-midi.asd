@@ -7,7 +7,9 @@
                (:version "midi-protocol" "0.1.0")
                (:version "music-theory" "0.5.0")
                (:version "sat-protocol" "0.2.0")
-               "sat-backend-cdcl")
+               "sat-backend-cdcl"
+               ;; score-protocol returns FSet seqs; read through fset: directly
+               "fset")
   :pathname "src"
   :serial t
   :components ((:file "package")

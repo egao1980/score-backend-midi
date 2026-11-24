@@ -26,14 +26,52 @@
 
 (in-package #:score-backend-midi)
 
+(defparameter +rehearsal-mix-keys+ '(:boost :volume :others-volume :others-pan)
+  "The REHEARSAL-SET keys that are REHEARSAL-MIX's. Data.")
+
+(defun %plist-select (plist keep-p)
+  "A fresh plist of the key/value pairs of PLIST whose key satisfies KEEP-P, in order."
+  (loop for (key value) on plist by #'cddr
+        when (funcall keep-p key)
+          nconc (list key value)))
+
 (defun rehearsal-mix (score voice-id &key (boost 20) (volume 127) (others-volume 80)
                                           (others-pan 16))
   "A SCORE-TO-SMF :MIX that brings the voice VOICE-ID forward (file header)."
-  (declare (ignorable score voice-id boost volume others-volume others-pan))
-  (%sc4-pending 'rehearsal-mix))
+  (check-type score score-protocol:score)
+  (check-type boost (integer 0 127))
+  (check-type volume (integer 0 127))
+  (check-type others-volume (integer 0 127))
+  (check-type others-pan (integer 0 127))
+  (let ((ids (mapcar #'score-protocol:element-id (%score-voices score))))
+    (loop until (member voice-id ids :test #'equal)
+          do (restart-case (error 'score-protocol:unknown-element :id voice-id)
+               (use-value (value)
+                 :report "Use another voice id (checked again)."
+                 :interactive (lambda ()
+                                (format *query-io* "~&Voice id: ")
+                                (finish-output *query-io*)
+                                (list (read-line *query-io*)))
+                 (setf voice-id value))))
+    (mapcar (lambda (id)
+              (if (equal id voice-id)
+                  (list id :velocity boost :volume volume :pan 64)
+                  (list id :velocity 0 :volume others-volume :pan others-pan)))
+            ids)))
 
 (defun rehearsal-set (score &rest keys &key voices boost volume others-volume others-pan
                       &allow-other-keys)
   "(VOICE-ID . SMF) per voice of VOICES, each with that voice brought forward."
-  (declare (ignorable score keys voices boost volume others-volume others-pan))
-  (%sc4-pending 'rehearsal-set))
+  (declare (ignore boost volume others-volume others-pan))
+  (check-type score score-protocol:score)
+  (check-type voices list)
+  (let ((mix-keys (%plist-select keys (lambda (key) (member key +rehearsal-mix-keys+))))
+        (rest (%plist-select keys (lambda (key)
+                                    (not (or (member key +rehearsal-mix-keys+)
+                                             (member key '(:voices :mix))))))))
+    (mapcar (lambda (voice-id)
+              (cons voice-id
+                    (apply #'score-to-smf score
+                           :mix (apply #'rehearsal-mix score voice-id mix-keys)
+                           rest)))
+            (or voices (mapcar #'score-protocol:element-id (%score-voices score))))))

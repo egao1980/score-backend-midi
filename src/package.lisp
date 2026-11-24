@@ -71,8 +71,3 @@ so score-protocol:uncertain-elements is the uncertainty report.")
    #:smf-to-score #:import-midi))
 
 (in-package #:score-backend-midi)
-
-(defun %sc4-pending (name)
-  "Contract stub for slice SC4. Every call is replaced by the implementation,
-then this function is deleted."
-  (error "score-backend-midi SC4 pending: ~A" name))

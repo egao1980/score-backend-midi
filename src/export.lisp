@@ -156,15 +156,483 @@
 
 (in-package #:score-backend-midi)
 
+;;; Small helpers shared by every file -------------------------------------------
+
+(defun %proper-list-of-p (object predicate)
+  "True when OBJECT is a proper list whose members satisfy PREDICATE."
+  (loop for tail = object then (cdr tail)
+        while (consp tail)
+        always (funcall predicate (car tail))
+        finally (return (null tail))))
+
+(defun %seq-list (seq)
+  "The members of SEQ (an FSet seq or a list) as a list."
+  (fset:convert 'list seq))
+
+(defun %score-voices (score)
+  "Every voice of SCORE, in document order."
+  (loop for part in (%seq-list (score-protocol:score-parts score))
+        append (score-protocol:part-voices part)))
+
+(defun %event-notes (event)
+  "The notes EVENT sounds: itself for a note event, its chord notes for a chord."
+  (typecase event
+    (score-protocol:note-event (list event))
+    (score-protocol:chord-event (score-protocol:chord-event-notes event))
+    (t '())))
+
+(defun %grace-event-p (event)
+  (and (typep event 'score-protocol:sounding-event) (score-protocol:event-grace event) t))
+
+(defun %warn-losses (losses table)
+  "WARN LOSSY-CONVERSION (FORMAT :MIDI) once for each string of TABLE in LOSSES,
+in TABLE order."
+  (dolist (what table)
+    (when (member what losses :test #'string=)
+      (warn 'score-protocol:lossy-conversion :format :midi :what what))))
+
+;;; Arguments ------------------------------------------------------------------
+
+(defun %programs-p (object)
+  "An alist (id . program), each program 0..127."
+  (%proper-list-of-p object (lambda (entry)
+                              (and (consp entry) (typep (cdr entry) '(integer 0 127))))))
+
+(defun %mix-plist-p (object)
+  "A plist of :VELOCITY -127..127, :VOLUME 0..127 and :PAN 0..127."
+  (and (listp object)
+       (loop for tail = object then (cddr tail)
+             until (null tail)
+             always (and (consp tail) (consp (cdr tail))
+                         (case (car tail)
+                           (:velocity (typep (cadr tail) '(integer -127 127)))
+                           ((:volume :pan) (typep (cadr tail) '(integer 0 127)))
+                           (t nil))))))
+
+(defun %mix-p (object)
+  "An alist (id . plist) of mix entries."
+  (%proper-list-of-p object (lambda (entry)
+                              (and (consp entry) (%mix-plist-p (cdr entry))))))
+
+(defun %unfold-entry-p (object)
+  (or (integerp object)
+      (and (consp object) (integerp (car object)) (typep (cdr object) '(integer 1)))))
+
+(defun %unfold-p (object)
+  "T, NIL, or a list of bars and (bar . pass) conses."
+  (or (eq object t)
+      (%proper-list-of-p object #'%unfold-entry-p)))
+
+(defun %level-dynamic-p (object)
+  "A dynamic of +DYNAMIC-VELOCITIES+ whose AFTER isn't NIL."
+  (and (third (assoc object +dynamic-velocities+)) t))
+
+(defun %known-entries (alist ids)
+  "The entries of ALIST whose key is one of IDS. Any other entry signals
+UNKNOWN-ELEMENT (ID = its key) inside a CONTINUE restart that ignores it."
+  (remove-if-not (lambda (entry)
+                   (or (member (car entry) ids :test #'equal)
+                       (restart-case (error 'score-protocol:unknown-element :id (car entry))
+                         (continue ()
+                           :report "Ignore this entry."
+                           nil))))
+                 alist))
+
+(defun %part-and-voice-ids (score)
+  (loop for part in (%seq-list (score-protocol:score-parts score))
+        collect (score-protocol:element-id part)
+        append (mapcar #'score-protocol:element-id (score-protocol:part-voices part))))
+
+;;; Playing order ----------------------------------------------------------------
+
+(defun %played-bars (score unfold)
+  "(values S PLAYED): the score played and its (bar . pass) entries (Playing order)."
+  (cond ((eq unfold t)
+         (multiple-value-bind (view id-map passes) (score-protocol:unfold score)
+           (declare (ignore id-map))
+           (values view
+                   (loop for measure in (%seq-list (score-protocol:score-measure-map view))
+                         for bar from (score-protocol:score-first-bar view)
+                         collect (cons bar (values (fset:lookup passes
+                                                                (score-protocol:element-id measure))))))))
+        ((null unfold)
+         (values score
+                 (loop for bar from (score-protocol:score-first-bar score)
+                         to (score-protocol:score-last-bar score)
+                       collect (cons bar 1))))
+        (t
+         (let ((first (score-protocol:score-first-bar score))
+               (last (score-protocol:score-last-bar score)))
+           (values score
+                   (loop for entry in unfold
+                         for cell = (if (consp entry) (cons (car entry) (cdr entry)) (cons entry 1))
+                         when (or (<= first (car cell) last)
+                                  (restart-case (error 'score-protocol:invalid-position
+                                                       :position entry
+                                                       :reason "not a bar of the score")
+                                    (continue ()
+                                      :report "Drop this entry."
+                                      nil)))
+                           collect cell))))))
+
+;;; Conductor ------------------------------------------------------------------
+
+(defun %played-signature (s bar)
+  "(numerator . denominator) of BAR's time signature (conductor, 2)."
+  (let ((meter (score-protocol:bar-time s bar))
+        (length (score-protocol:bar-length s bar)))
+    (if (= length (music-theory:meter-measure-duration meter))
+        (cons (reduce #'+ (music-theory:meter-numerators meter))
+              (music-theory:meter-denominator meter))
+        (loop for d = (music-theory:meter-denominator meter) then (* 2 d)
+              when (integerp (* length d))
+                return (cons (* length d) d)))))
+
+(defun %clocks-per-click (numerator denominator)
+  (max 1 (floor (* 96 (music-theory:beat-unit
+                       (music-theory:make-meter :numerators (list numerator)
+                                                :denominator denominator))))))
+
+(defun %tempo-microseconds (tempo)
+  "floor(15000000 / (b * u) + 1/2) for TEMPO, a float BPM through RATIONALIZE."
+  (floor (+ (/ 15000000 (* (rationalize (music-theory:tempo-bpm tempo))
+                           (music-theory:tempo-beat-unit tempo)))
+            1/2)))
+
+;;; Timed rows -------------------------------------------------------------------
+;;; A row is ((tick cat sub1 sub2 seq) . event): the order the file header
+;;; states at one tick is CAT (the numbered kinds), then SUB1 SUB2 (channel and
+;;; key, or the voice number), then SEQ, the order of emission.
+
+(defun %row-key< (a b)
+  (loop for x in a
+        for y in b
+        do (cond ((< x y) (return t))
+                 ((> x y) (return nil)))
+        finally (return nil)))
+
+(defun %track-of (rows end-tick)
+  "A track of ROWS, in key order, ending with one END-OF-TRACK-EVENT at
+END-TICK (or at the last event, when that is later)."
+  (midi-protocol:track-from-absolute
+   (cons (cons end-tick (midi-protocol:make-end-of-track-event))
+         (mapcar (lambda (row) (cons (first (car row)) (cdr row)))
+                 (stable-sort (copy-list rows) #'%row-key< :key #'car)))))
+
+;;; Voices -----------------------------------------------------------------------
+
+(defstruct (%play (:constructor %make-play (onset event pass)) (:copier nil) (:predicate nil))
+  "One event of a voice's playback sequence: its ONSET (whole notes from 0),
+the EVENT, and the PASS of its played bar."
+  onset event pass)
+
+(defstruct (%voice-out (:constructor %make-voice-out) (:copier nil) (:predicate nil))
+  "What one voice writes: its number K, part index I (0-based), CHANNEL, labels,
+program and mix values, NOTES ((on off key velocity) ...) sorted by on then key,
+and LYRICS ((tick text) ...) in playback order."
+  k i channel label part-label program volume pan notes lyrics)
+
+(defun %playback (s voice played starts losses)
+  "VOICE's playback sequence along PLAYED as a simple-vector of %PLAY (Notes).
+Grace events are left out, recording \"grace notes\" in the cell LOSSES."
+  (let ((measures (%seq-list (score-protocol:voice-measures voice)))
+        (count (fset:size (score-protocol:score-measure-map s)))
+        (first (score-protocol:score-first-bar s))
+        (out '()))
+    (loop for (bar . pass) in played
+          for u in starts
+          for index = (- bar first)
+          when (and (< index (length measures)) (< index count))
+            do (let ((offset 0))
+                 (dolist (event (%seq-list (nth index measures)))
+                   (if (%grace-event-p event)
+                       (pushnew "grace notes" (car losses) :test #'string=)
+                       (progn (push (%make-play (+ u offset) event pass) out)
+                              (incf offset (score-protocol:event-duration event)))))))
+    (coerce (nreverse out) 'simple-vector)))
+
+(defun %velocities (plays default-dynamic boost)
+  "The note-on velocity of each %PLAY: the dynamic in force along the sequence
+(rests included), accents, then BOOST added and the result clamped (Velocity)."
+  (let ((level default-dynamic))
+    (map 'simple-vector
+         (lambda (play)
+           (let* ((mark (score-protocol:event-dynamic (%play-event play)))
+                  (row (and mark (assoc (score-protocol:dynamic-mark-value mark)
+                                        +dynamic-velocities+)))
+                  (velocity (if row
+                                (second row)
+                                (second (assoc level +dynamic-velocities+)))))
+             (when (and row (third row))
+               (setf level (third row)))
+             (max 1 (min 127 (+ velocity boost)))))
+         plays)))
+
+(defun %sounding-key (note)
+  (music-theory:pitch-midi (score-protocol:note-pitch note)))
+
+(defun %sounding-notes (plays velocities tick losses)
+  "((on off key velocity) ...) of the sounding notes of PLAYS, each tie chain
+once, in playback order (Notes, Ties). TICK writes a position."
+  (let ((continued (make-hash-table :test 'equal))
+        (out '()))
+    (dotimes (i (length plays) (nreverse out))
+      (let ((play (svref plays i)) (seen '()))
+        (dolist (note (%event-notes (%play-event play)))
+          (let ((key (%sounding-key note)))
+            (unless (member key seen)
+              (push key seen)
+              (unless (gethash (cons i (score-protocol:element-id note)) continued)
+                (let ((stop (+ (%play-onset play)
+                               (score-protocol:event-duration (%play-event play))))
+                      (current note)
+                      (ci i))
+                  (loop for tie = (score-protocol:note-tie current)
+                        while (and tie (< (1+ ci) (length plays)))
+                        do (let* ((next (svref plays (1+ ci)))
+                                  (target (find (score-protocol:tie-end tie)
+                                                (%event-notes (%play-event next))
+                                                :key #'score-protocol:element-id
+                                                :test #'equal)))
+                             (unless (and target
+                                          (= stop (%play-onset next))
+                                          (= key (%sounding-key target)))
+                               (return))
+                             (setf (gethash (cons (1+ ci) (score-protocol:element-id target))
+                                            continued)
+                                   t)
+                             (setf stop (+ (%play-onset next)
+                                           (score-protocol:event-duration (%play-event next)))
+                                   current target
+                                   ci (1+ ci))))
+                  (if (<= 0 key 127)
+                      (let* ((on (funcall tick (%play-onset play)))
+                             (off (funcall tick stop)))
+                        (when (<= off on) (setf off (1+ on)))
+                        (push (list on off key (svref velocities i)) out))
+                      (pushnew "pitch range" (car losses) :test #'string=)))))))))))
+
+(defun %lyric-text (lyric)
+  (if (member (score-protocol:lyric-syllabic lyric) '(:begin :middle))
+      (concatenate 'string (score-protocol:lyric-text lyric) "-")
+      (score-protocol:lyric-text lyric)))
+
+(defun %voice-lyrics (plays verse tick)
+  "((tick text) ...) of the lyrics VERSE selects along PLAYS (Lyrics)."
+  (when verse
+    (loop for play across plays
+          for event = (%play-event play)
+          for v = (if (eq verse :pass) (%play-pass play) verse)
+          unless (typep event 'score-protocol:rest-event)
+            append (loop for lyric in (score-protocol:event-lyrics event)
+                         when (eql v (score-protocol:lyric-verse lyric))
+                           collect (list (funcall tick (%play-onset play))
+                                         (%lyric-text lyric))))))
+
+(defun %voice-outs (s played starts programs mix program verse default-dynamic tick losses)
+  "A %VOICE-OUT per voice of S, in document order (Voices and channels, Notes,
+Velocity, Lyrics)."
+  (let ((k -1) (outs '()))
+    (loop for part in (%seq-list (score-protocol:score-parts s))
+          for i from 0
+          for part-label = (or (score-protocol:part-name part) (format nil "Part ~D" (1+ i)))
+          for voices = (score-protocol:part-voices part)
+          do (loop for voice in voices
+                   for j from 1
+                   for voice-id = (score-protocol:element-id voice)
+                   for part-id = (score-protocol:element-id part)
+                   for prog = (or (assoc voice-id programs :test #'equal)
+                                  (assoc part-id programs :test #'equal))
+                   for entry = (cdr (or (assoc voice-id mix :test #'equal)
+                                        (assoc part-id mix :test #'equal)))
+                   for plays = (%playback s voice played starts losses)
+                   for velocities = (%velocities plays default-dynamic (getf entry :velocity 0))
+                   do (incf k)
+                      (push (%make-voice-out
+                             :k k :i i
+                             :channel (nth (mod k 15) +midi-channels+)
+                             :label (or (score-protocol:voice-name voice)
+                                        (if (= 1 (length voices))
+                                            part-label
+                                            (format nil "~A ~D" part-label j)))
+                             :part-label part-label
+                             :program (if prog (cdr prog) program)
+                             :volume (getf entry :volume +default-volume+)
+                             :pan (getf entry :pan +default-pan+)
+                             :notes (stable-sort (%sounding-notes plays velocities tick losses)
+                                                 (lambda (a b)
+                                                   (or (< (first a) (first b))
+                                                       (and (= (first a) (first b))
+                                                            (< (third a) (third b))))))
+                             :lyrics (%voice-lyrics plays verse tick))
+                            outs)))
+    (nreverse outs)))
+
+(defun %voice-track (outs name instrument end-tick)
+  "The track of the voices OUTS (one voice, or a part's), named NAME and
+INSTRUMENT (Tracks: setup, note-offs, lyrics, note-ons)."
+  (let ((rows '()) (seq -1))
+    (flet ((put (tick cat sub1 sub2 event)
+             (push (cons (list tick cat sub1 sub2 (incf seq)) event) rows)))
+      (put 0 1 0 0 (midi-protocol:make-track-name-event :text name))
+      (put 0 1 0 0 (midi-protocol:make-instrument-name-event :text instrument))
+      (dolist (out outs)
+        (let ((channel (%voice-out-channel out)))
+          (put 0 1 0 0 (midi-protocol:make-program-change-event
+                        :channel channel :program (%voice-out-program out)))
+          (put 0 1 0 0 (midi-protocol:make-control-change-event
+                        :channel channel :controller 7 :value (%voice-out-volume out)))
+          (put 0 1 0 0 (midi-protocol:make-control-change-event
+                        :channel channel :controller 10 :value (%voice-out-pan out)))))
+      (dolist (out outs)
+        (let ((channel (%voice-out-channel out)))
+          (loop for (on off key velocity) in (%voice-out-notes out)
+                do (put off 2 channel key (midi-protocol:make-note-off-event
+                                           :channel channel :key key :velocity 0))
+                   (put on 4 channel key (midi-protocol:make-note-on-event
+                                          :channel channel :key key :velocity velocity)))
+          (loop for (tick text) in (%voice-out-lyrics out)
+                do (put tick 3 (%voice-out-k out) 0 (midi-protocol:make-lyric-event :text text))))))
+    (%track-of rows end-tick)))
+
+(defun %conductor-track (s played starts chord-symbols tick losses end-tick)
+  "Track 0 (The conductor track, 1-6)."
+  (let ((rows '()) (seq -1) (metadata (score-protocol:score-metadata s)))
+    (flet ((put (at cat event)
+             (push (cons (list at cat 0 0 (incf seq)) event) rows)))
+      ;; 1. Title and copyright.
+      (let ((title (getf metadata :title)) (copyright (getf metadata :copyright)))
+        (when title (put 0 1 (midi-protocol:make-track-name-event :text title)))
+        (when copyright (put 0 1 (midi-protocol:make-copyright-event :text copyright))))
+      ;; 2. Time signatures.
+      (loop with previous = nil
+            for (bar) in played
+            for u in starts
+            for j from 0
+            for signature = (%played-signature s bar)
+            do (when (or (zerop j) (not (equal signature previous)))
+                 (destructuring-bind (n . d) signature
+                   (put (funcall tick u) 2
+                        (midi-protocol:make-time-signature-event
+                         :numerator n :denominator d
+                         :clocks-per-click (%clocks-per-click n d)
+                         :thirty-seconds-per-quarter 8))))
+               (setf previous signature))
+      ;; 3. Key signatures.
+      (loop with previous = nil
+            for (bar) in played
+            for u in starts
+            for j from 0
+            for key = (score-protocol:bar-key s bar)
+            do (when (or (zerop j) (not (equalp key previous)))
+                 (put (funcall tick u) 3
+                      (midi-protocol:make-key-signature-event
+                       :sharps (music-theory:key-signature key)
+                       :minor-p (eq :minor (music-theory:key-mode key)))))
+               (setf previous key))
+      ;; 4. Tempi.
+      (when (and played
+                 (notany (lambda (mark)
+                           (and (score-protocol:tempo-mark-tempo mark)
+                                (zerop (score-protocol:tempo-mark-offset mark))))
+                         (score-protocol:measure-info-tempo
+                          (score-protocol:bar-measure s (car (first played))))))
+        (put 0 4 (midi-protocol:make-tempo-event :tempo midi-protocol:+default-tempo+)))
+      (loop for (bar) in played
+            for u in starts
+            do (dolist (mark (score-protocol:measure-info-tempo (score-protocol:bar-measure s bar)))
+                 (let ((tempo (score-protocol:tempo-mark-tempo mark)))
+                   (when tempo
+                     (let ((us (%tempo-microseconds tempo)))
+                       (unless (<= 1 us 16777215)
+                         (pushnew "tempo range" (car losses) :test #'string=)
+                         (setf us (max 1 (min 16777215 us))))
+                       (put (funcall tick (+ u (score-protocol:tempo-mark-offset mark))) 4
+                            (midi-protocol:make-tempo-event :tempo us)))))))
+      ;; 5. Rehearsal markers.
+      (loop for (bar) in played
+            for u in starts
+            for mark = (score-protocol:measure-info-rehearsal (score-protocol:bar-measure s bar))
+            when mark
+              do (put (funcall tick u) 5
+                      (midi-protocol:make-marker-event
+                       :text (score-protocol:rehearsal-mark-text mark))))
+      ;; 6. Chord symbols.
+      (when chord-symbols
+        (let ((anchors (%seq-list (score-protocol:score-chord-symbols s))))
+          (loop for (bar) in played
+                for u in starts
+                do (dolist (anchor anchors)
+                     (let ((position (score-protocol:anchor-position anchor)))
+                       (when (eql bar (car position))
+                         (let ((text (concatenate 'string +chord-text-prefix+
+                                                  (music-theory:print-chord-symbol
+                                                   (score-protocol:anchor-symbol anchor)
+                                                   :dialect :pop))))
+                           (put (funcall tick (+ u (cdr position))) 6
+                                (if (eq chord-symbols :marker)
+                                    (midi-protocol:make-marker-event :text text)
+                                    (midi-protocol:make-text-event :text text))))))))))
+      (%track-of rows end-tick))))
+
+;;; Entry points -------------------------------------------------------------------
+
 (defun score-to-smf (score &key (division +default-division+) (layout :voice)
                                 (program +default-program+) programs mix (unfold t)
                                 (verse 1) (chord-symbols :text) (default-dynamic :mf))
   "SCORE as a midi-protocol SMF of format 1 (file header)."
-  (declare (ignorable score division layout program programs mix unfold verse
-                      chord-symbols default-dynamic))
-  (%sc4-pending 'score-to-smf))
+  (check-type score score-protocol:score)
+  (check-type division (integer 1 32767))
+  (check-type layout (member :voice :part))
+  (check-type program (integer 0 127))
+  (check-type programs (satisfies %programs-p) "an alist (id . program 0..127)")
+  (check-type mix (satisfies %mix-p)
+              "an alist (id . plist of :VELOCITY -127..127, :VOLUME and :PAN 0..127)")
+  (check-type unfold (satisfies %unfold-p) "T, NIL or a list of bars and (bar . pass) conses")
+  (check-type verse (or null (integer 1) (eql :pass)))
+  (check-type chord-symbols (member :text :marker nil))
+  (check-type default-dynamic (satisfies %level-dynamic-p)
+              "a dynamic of +DYNAMIC-VELOCITIES+ that is not an accent")
+  (let* ((ids (%part-and-voice-ids score))
+         (programs (%known-entries programs ids))
+         (mix (%known-entries mix ids))
+         (losses (list (list "ids"))))
+    (multiple-value-bind (s played) (%played-bars score unfold)
+      (let* ((starts (loop with u = 0
+                           for (bar) in played
+                           collect u
+                           do (incf u (score-protocol:bar-length s bar))))
+             (end (reduce #'+ played :key (lambda (cell) (score-protocol:bar-length s (car cell)))))
+             (end-tick (floor (+ (* 4 division end) 1/2)))
+             (tick (lambda (x)
+                     (let ((v (* 4 division x)))
+                       (unless (integerp v)
+                         (pushnew "tick rounding" (car losses) :test #'string=))
+                       (floor (+ v 1/2)))))
+             (conductor (%conductor-track s played starts chord-symbols tick losses end-tick))
+             (outs (%voice-outs s played starts programs mix program verse default-dynamic
+                                tick losses))
+             (tracks (ecase layout
+                       (:voice
+                        (mapcar (lambda (out)
+                                  (%voice-track (list out) (%voice-out-label out)
+                                                (%voice-out-part-label out) end-tick))
+                                outs))
+                       (:part
+                        (loop for i from 0 below (fset:size (score-protocol:score-parts s))
+                              for part-outs = (remove-if-not (lambda (out) (= i (%voice-out-i out)))
+                                                             outs)
+                              for label = (or (score-protocol:part-name
+                                               (fset:@ (score-protocol:score-parts s) i))
+                                              (format nil "Part ~D" (1+ i)))
+                              collect (%voice-track part-outs label label end-tick)))))
+             (smf (midi-protocol:make-smf :format 1 :division division
+                                          :tracks (cons conductor tracks))))
+        (when (> (length outs) 15)
+          (pushnew "shared channels" (car losses) :test #'string=))
+        (%warn-losses (car losses) +export-losses+)
+        smf))))
 
 (defun export-midi (score destination &rest keys)
   "Write SCORE-TO-SMF of SCORE and KEYS to DESTINATION with midi-protocol's WRITE-SMF."
-  (declare (ignorable score destination keys))
-  (%sc4-pending 'export-midi))
+  (midi-protocol:write-smf (apply #'score-to-smf score keys) destination))

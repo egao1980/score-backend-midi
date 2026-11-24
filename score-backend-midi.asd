@@ -3,7 +3,7 @@
   :description "Standard MIDI File export and import for score-protocol: tracks and channels per voice, tempo map, lyrics, chord text, unfolded repeats, rehearsal mixes; quantisation through sat-protocol, spelling through music-theory"
   :author "egao1980"
   :license "MIT"
-  :depends-on ((:version "score-protocol" "0.1.0")
+  :depends-on ((:version "score-protocol" "0.2.0")
                (:version "midi-protocol" "0.1.0")
                (:version "music-theory" "0.5.0")
                (:version "sat-protocol" "0.2.0")
@@ -12,7 +12,6 @@
   :serial t
   :components ((:file "package")
                (:file "tables")
-               (:file "playback")
                (:file "export")
                (:file "mix")
                (:file "quantize")
@@ -27,7 +26,6 @@
   :pathname "tests"
   :serial t
   :components ((:file "package")
-               (:file "playback-test")
                (:file "export-test")
                (:file "mix-test")
                (:file "quantize-test")

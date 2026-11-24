@@ -65,6 +65,20 @@
     (ok (equal (facts name :losses) (losses-of (lambda () (score-to-smf score)))))
     (ok (every (lambda (f) (eq :midi f)) (lossy-formats (lambda () (score-to-smf score)))))))
 
+(deftest-parametrize export-plays-unfold
+    ((name) :rows +export-fixtures+)
+  ;; The golden files were derived from generate-sc4.py's own walk; it must be
+  ;; score-protocol's UNFOLD order, passes included.
+  (ok (equal (mapcar (lambda (row) (cons (first row) (second row))) (facts name :bars))
+             (unfold-rows (fixture-score name)))))
+
+(deftest export-dal-segno-without-segno
+  ;; UNFOLD's SCORE-ERROR reaches the caller.
+  (let ((score (case-score '(() (:jump (:dal-segno)) (:jump (:segno))))))
+    (ok (typep (signalled (lambda () (score-to-smf score))) 'sp:score-error))
+    (ok (= 5760 (track-end (first (mp:smf-tracks (export-quietly score :unfold nil)))))
+        "as written: three bars, no navigation")))
+
 (deftest export-titles
   (ok (equal "Amazing Grace"
              (track-name (first (mp:smf-tracks (export-quietly (fixture-score "sc0-pickup")))))))

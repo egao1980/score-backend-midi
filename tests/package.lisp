@@ -285,6 +285,35 @@ write them: TIME a meter string, KEY a key name, tempo marks (offset bpm unit)."
 (defun part-names (score)
   (mapcar #'sp:part-name (seq-list (sp:score-parts score))))
 
+(defun unfold-rows (score)
+  "(source-bar . pass) for each measure of (score-protocol:unfold SCORE)."
+  (multiple-value-bind (view id-map passes) (sp:unfold score)
+    (let ((source-ids (mapcar #'sp:element-id (seq-list (sp:score-measure-map score)))))
+      (loop for m in (seq-list (sp:score-measure-map view))
+            collect (cons (+ (sp:score-first-bar score)
+                             (position (fset:lookup id-map (sp:element-id m)) source-ids :test #'equal))
+                          (fset:lookup passes (sp:element-id m)))))))
+
+(defun case-score (measures)
+  "A one-voice 4/4 score with one whole rest per bar and the measures given
+as plists (:repeat-start :repeat-end :ending (passes measures) :jump (kinds))."
+  (sp:make-score
+   :measures (loop for m in measures
+                   for first = t then nil
+                   collect (sp:make-measure-info
+                            :time (and first (mt:parse-meter "4/4"))
+                            :key (and first (mt:parse-key "C"))
+                            :repeat-start (getf m :repeat-start)
+                            :repeat-end (getf m :repeat-end)
+                            :ending (let ((e (getf m :ending)))
+                                      (and e (sp:make-ending :passes (first e) :measures (second e))))
+                            :jump (mapcar (lambda (k) (sp:make-jump-mark :kind k)) (getf m :jump))))
+   :parts (list (sp:make-part
+                 :staves (list (sp:make-staff))
+                 :voices (list (sp:make-voice
+                                :measures (loop repeat (length measures)
+                                                collect (list (sp:make-rest-event :duration 1)))))))))
+
 (defun ticks->whole (tick division) (/ tick (* 4 division)))
 
 (defun minted-prefix (element)

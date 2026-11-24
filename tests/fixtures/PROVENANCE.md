@@ -16,7 +16,6 @@ The script is a second implementation of the rules in `src/*.lisp`, in Python, w
 | `sc4-export-*.mid` | `SCORE-TO-SMF` of each fixture score with default options | MIT (generated) | the script's export rules, checked against music21, written with mido |
 | `sc4-export-facts.sexp` | the same exports as readable rows: played bars, meta events, per-voice notes, lyrics, spellings, losses, and the measure map the import rebuilds | MIT (generated) | same |
 | `sc4-variant-*.mid`, `sc4-variants.sexp` | `SCORE-TO-SMF` with the options of each row (layout, unfold, verse, chord symbols, division, programs, mix, default dynamic) | MIT (generated) | same |
-| `sc4-playback.sexp` | `PLAYBACK-ORDER` of the fixture scores and of 18 synthetic measure maps, with whether music21 agrees | MIT (generated) | the script's walk; music21 `expandRepeats` |
 | `sc4-quantize.sexp` | `QUANTIZE-ONSETS` of 12 hand cases (straight, triplet, swing, dotted, compound, duplet, cut and pickup beats), 11 of them exact, 2 with other subdivision lists, and 40 seeded random cases | MIT (generated) | brute force over every allowed grid |
 | `sc4-perf-01.mid` … `sc4-perf-10.mid` | humanised renderings of ten melodies (below) | MIT (generated) | seeded timing errors, written with mido |
 | `sc4-performances.sexp` | for each rendering: the notation (the truth) and the import the rules give | MIT (generated) | the script's quantisation and import rules |
@@ -44,13 +43,8 @@ The grid weights of `+GRID-WEIGHTS+` (`:level 50`, `:tuplet 30`) and the margin 
 
 ## Where the rules differ from music21
 
-`PLAYBACK-ORDER` follows score-protocol's SC1 `UNFOLD` rules (contract branch `agent/sc1-contract-192e`), so the two agree by construction. music21's `expandRepeats` agrees with them on both fixture scores with navigation and on 12 of the 18 synthetic rows; the six where it doesn't are marked in `sc4-playback.sexp`:
+The export plays score-protocol's `UNFOLD` view (SC1, 0.2.0). To derive the facts, the script walks the same rules in Python; music21's `expandRepeats` agrees with that walk on both fixture scores with navigation ("Repeats and Voltas", "Dal Segno al Coda"), and `export-plays-unfold` checks the walk against the real `UNFOLD`, passes included. Where music21 and `UNFOLD` part ways on other scores (no forward repeat, endings after a jump, malformed navigation) is score-protocol's PROVENANCE. One consequence for lyrics: a bar's PASS counts how many times it has been played, so a second ending played once is pass 1 and `:VERSE :PASS` gives it verse 1 (the strophic fixture shows it).
 
-- **Repeats without a forward sign.** A backward repeat with no forward sign repeats from the bar after the section (and its endings) before it; music21 returns to the last forward sign ("two sections", "section after an ending group").
-- **Endings after a jump.** After D.C. or D.S. only the last ending of each group is played; music21 replays the first ending too ("da capo with voltas").
-- **Every jump mark once.** A D.S. later in the score is still taken after a D.C.; music21 takes neither ("two jumps").
-- **Malformed navigation.** A To Coda after a plain D.C. is played through, and an *al Coda* jump with no coda ends the walk; music21 refuses to expand both ("to coda without al coda", "al coda without a coda"). A D.S. with no segno signals `SCORE-ERROR` (tested by hand; music21 refuses too).
-- **Passes.** PASS counts how many times a bar has been played (SC1's definition), so a second ending played once is pass 1 and `:VERSE :PASS` gives it verse 1 (the strophic fixture shows it).
 - **Ties between chord notes.** music21's `stripTies` doesn't join a tie between single notes of two chords; the script joins those segments before comparing (the tied G4 of the SC0 keyboard fixture).
 - **Velocity.** Ours is the `+DYNAMIC-VELOCITIES+` table along the playback order. music21's realised volume saturates at ff (ff and fff both give 127), so velocities are checked against the table and by hand, not against music21.
 - **Time signatures of short bars.** A pickup or a short last bar is written with a signature of its actual length (1/4 before 3/4); music21 writes the notated meter. This is what lets the import rebuild the pickup.

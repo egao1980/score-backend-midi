@@ -18,7 +18,6 @@ Outputs (tests/fixtures/PROVENANCE.md has the table):
   sc4-export-facts.sexp  per fixture: played bars, meta events, per-voice notes,
                          lyrics and spellings, losses, and the measure map the
                          import must rebuild
-  sc4-playback.sexp      PLAYBACK-ORDER rows: fixtures and synthetic measure maps
   sc4-quantize.sexp      QUANTIZE-ONSETS rows (brute force over every grid)
   sc4-perf-*.mid         humanised renderings of ten melodies (below)
   sc4-performances.sexp  their notation (ground truth) and the import's result
@@ -438,7 +437,7 @@ class Score:
         return out
 
 
-# --- PLAYBACK-ORDER (src/playback.lisp) ------------------------------------
+# --- the playing order: score-protocol's UNFOLD (SC1) ------------------------
 
 DC_KINDS = ("da-capo", "da-capo-al-fine", "da-capo-al-coda",
             "dal-segno", "dal-segno-al-fine", "dal-segno-al-coda")
@@ -489,7 +488,8 @@ class NoSegno(Exception):
 
 
 def playback_order(score):
-    """SC1's UNFOLD walk (src/playback.lisp): (bar, times played so far)."""
+    """score-protocol's UNFOLD walk (SC1, src/views.lisp there), restated to
+    derive the export facts; tests/export-test.lisp checks it against UNFOLD."""
     if not score.measures:
         return []
     sections, endings = sections_of(score), endings_of(score)
@@ -1520,68 +1520,6 @@ VARIANTS = [
      [Kw("default-dynamic"), Kw("p"), Kw("chord-symbols"), None]),
 ]
 
-PLAYBACK_CASES = [
-    # (name, measures as (repeat-start repeat-end ending-passes ending-measures jumps))
-    ("plain", [{}, {}, {}]),
-    ("repeat to start", [{}, {"re": 2}, {}]),
-    ("repeat three times", [{"rs": True}, {"re": 3}, {}]),
-    ("one-bar repeat", [{}, {"rs": True, "re": 2}, {}]),
-    ("two sections", [{"rs": True}, {"re": 2}, {}, {"re": 2}]),
-    ("voltas", [{"rs": True}, {"re": 2, "end": ([1], 1)}, {"end": ([2], 1)}, {}]),
-    ("da capo", [{}, {}, {"j": ["da-capo"]}]),
-    ("da capo al fine", [{}, {"j": ["fine"]}, {}, {"j": ["da-capo-al-fine"]}]),
-    ("fine before the jump is ignored", [{"j": ["fine"]}, {}, {"j": ["da-capo"]}]),
-    ("dal segno al fine with a repeat", [{}, {"rs": True, "j": ["segno"]}, {"re": 2, "j": ["fine"]},
-                                         {}, {"j": ["dal-segno-al-fine"]}]),
-    ("da capo al coda", [{}, {"j": ["to-coda"]}, {"j": ["da-capo-al-coda"]}, {"j": ["coda"]}, {}]),
-    ("to coda without al coda", [{}, {"j": ["to-coda"]}, {"j": ["da-capo"]}, {"j": ["coda"]}]),
-    ("two jumps", [{}, {"j": ["da-capo"]}, {"j": ["segno"]}, {"j": ["dal-segno"]}]),
-    ("al coda without a coda", [{}, {"j": ["to-coda"]}, {"j": ["da-capo-al-coda"]}, {}]),
-    ("section after an ending group", [{"rs": True}, {"re": 2, "end": ([1], 1)}, {"end": ([2], 1)},
-                                       {}, {"re": 2}]),
-    ("da capo with voltas", [{"rs": True}, {"re": 2, "end": ([1], 1)}, {"end": ([2], 1)}, {"j": ["da-capo"]}]),
-    ("repeat then da capo on one bar", [{"rs": True}, {"re": 2, "j": ["da-capo"]}, {}]),
-    ("ending spanning two bars", [{"rs": True}, {}, {"end": ([1], 2)}, {"re": 2}, {"end": ([2], 1)}]),
-]
-
-MUSIC21_DIFFERS = {"da capo with voltas", "two sections", "to coda without al coda",
-                   "two jumps", "al coda without a coda", "section after an ending group"}
-
-
-def playback_case_score(case):
-    measures = []
-    for i, m in enumerate(case):
-        measures.append({"time": "4/4" if i == 0 else None, "key": "C major" if i == 0 else None,
-                         "pickup": False, "length": None, "repeat_start": bool(m.get("rs")),
-                         "repeat_end": m.get("re"), "ending": m.get("end"), "jumps": m.get("j", []),
-                         "rehearsal": None, "tempo": []})
-    s = Score.__new__(Score)
-    s.name, s.metadata, s.measures, s.anchors = "case", {}, measures, []
-    s.parts = [{"id": None, "name": None,
-                "voices": [{"id": "v", "name": None,
-                            "measures": [[{"kind": "rest", "id": None, "duration": F(1), "tuplet": None,
-                                           "grace": None, "dynamic": None, "lyrics": [], "notes": []}]
-                                         for _ in measures]}]}]
-    s.first_bar, s.last_bar = 1, len(measures)
-    return s
-
-
-def case_form(case):
-    out = []
-    for m in case:
-        form = []
-        if m.get("rs"):
-            form += [Kw("repeat-start"), True]
-        if m.get("re"):
-            form += [Kw("repeat-end"), m["re"]]
-        if m.get("end"):
-            form += [Kw("ending"), [m["end"][0], m["end"][1]]]
-        if m.get("j"):
-            form += [Kw("jump"), [Kw(j) for j in m["j"]]]
-        out.append(form)
-    return out
-
-
 def dump():
     import mido
     data = sys.stdin.buffer.read()
@@ -1668,26 +1606,6 @@ def main():
     write_form("sc4-variants.sexp",
                "SC4 SCORE-TO-SMF option rows: (name fixture options losses); the bytes are "
                "sc4-variant-<name>.mid.", variant_rows)
-    playback_rows = []
-    for name in EXPORT_FIXTURES:
-        playback_rows.append([name, Kw("fixture"), [Cons(b, p) for b, p in playback_order(scores[name])], True])
-    for label, case in PLAYBACK_CASES:
-        s = playback_case_score(case)
-        ours = playback_order(s)
-        try:
-            _, order, _ = music21_voice(s, s.parts[0]["voices"][0])
-        except Exception as exc:  # music21's ExpanderException
-            order = f"music21 can't expand: {exc}"
-        agrees = [b for b, _ in ours] == order
-        if not agrees:
-            print(f"playback {label}: music21 {order}, rules {[b for b, _ in ours]}")
-            if label not in MUSIC21_DIFFERS:
-                raise SystemExit("unexpected music21 difference")
-        playback_rows.append([label, case_form(case), [Cons(b, p) for b, p in ours], agrees])
-    write_form("sc4-playback.sexp",
-               "SC4 PLAYBACK-ORDER rows: (name measures expected music21-agrees). Fixture rows "
-               "name a fixture score; the others give measures as plists over a 4/4 bar.",
-               playback_rows)
     write_form("sc4-quantize.sexp",
                "SC4 QUANTIZE-ONSETS rows: (label beats onsets subdivisions exact choices positions "
                "confidences), by brute force over every allowed grid.", quantize_rows())

@@ -20,9 +20,8 @@
 ;;;;                   +DEFAULT-VOLUME+) and :PAN (CC10 0..127, default
 ;;;;                   +DEFAULT-PAN+). A voice uses its own entry, else its
 ;;;;                   part's, else none; each missing key takes its default.
-;;;;   UNFOLD          T: the bars of PLAYBACK-ORDER (playback.lisp). NIL: every
-;;;;                   bar once in written order, pass 1. Or a list of entries,
-;;;;                   each a bar number (pass 1) or a (bar . pass) cons.
+;;;;   UNFOLD          T (below), NIL, or a list of entries, each a bar number
+;;;;                   (pass 1) or a (bar . pass) cons.
 ;;;;   VERSE           NIL (no lyrics), an integer >= 1, or :PASS.
 ;;;;   CHORD-SYMBOLS   :TEXT, :MARKER or NIL.
 ;;;;   DEFAULT-DYNAMIC a dynamic of +DYNAMIC-VELOCITIES+ whose AFTER isn't NIL.
@@ -32,12 +31,23 @@
 ;;;; whose bar isn't a bar of SCORE (score-first-bar .. score-last-bar) signals
 ;;;; INVALID-POSITION (POSITION = the entry) inside a CONTINUE restart that drops
 ;;;; the entry. SCORE is not validated: CHECK-SCORE issues don't stop an export.
+;;;; The entries name SCORE's bars (score-first-bar .. score-last-bar).
 ;;;;
-;;;; Timeline. The played bars P_0 .. P_n-1 are the (BAR . PASS) entries above.
-;;;; P_j starts at U_j = the sum of the BAR-LENGTHs of the bars of P_0 .. P_j-1,
-;;;; and U = U_n is the end. A position x (whole notes from U_0 = 0) is at tick
-;;;; T(x) = floor(4 * DIVISION * x + 1/2). Every position is computed exactly
-;;;; and rounded once, never by summing rounded lengths.
+;;;; Playing order. Repeats, endings and jumps are score-protocol's (SC1): with
+;;;; UNFOLD T the export plays S = (score-protocol:unfold score), every bar of
+;;;; that view once in order, each with the PASS that UNFOLD's third value gives
+;;;; its measure. Its SCORE-ERROR (a D.S. with no segno) reaches the caller.
+;;;; With UNFOLD NIL, S is SCORE and every bar is played once in written order,
+;;;; pass 1; with a list, S is SCORE and its bars are played in the order and
+;;;; with the passes the entries give. Below, the rules read S; the parts,
+;;;; voices and their ids are the same in SCORE and its view, so PROGRAMS and
+;;;; MIX apply to both.
+;;;;
+;;;; Timeline. The played bars P_0 .. P_n-1 of S are the (BAR . PASS) entries
+;;;; above. P_j starts at U_j = the sum of the BAR-LENGTHs of the bars of P_0 ..
+;;;; P_j-1, and U = U_n is the end. A position x (whole notes from U_0 = 0) is at
+;;;; tick T(x) = floor(4 * DIVISION * x + 1/2). Every position is computed
+;;;; exactly and rounded once, never by summing rounded lengths.
 ;;;;
 ;;;; Voices and channels. Voices are numbered k = 0, 1, ... in document order
 ;;;; (parts in order, each part's voices in order). Voice k plays on channel

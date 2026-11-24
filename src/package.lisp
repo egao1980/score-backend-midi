@@ -5,8 +5,8 @@
 ;;;;
 ;;;; Files:
 ;;;;   tables.lisp     the data the rules name (velocities, channels, weights)
-;;;;   playback.lisp   PLAYBACK-ORDER: repeats, endings and jumps unfolded
-;;;;   export.lisp     SCORE-TO-SMF, EXPORT-MIDI: score -> SMF type 1
+;;;;   export.lisp     SCORE-TO-SMF, EXPORT-MIDI: score -> SMF type 1, repeats
+;;;;                   unfolded by score-protocol's UNFOLD
 ;;;;   mix.lisp        REHEARSAL-MIX, REHEARSAL-SET: one practice file per voice
 ;;;;   quantize.lisp   QUANTIZE-ONSETS: the per-beat grid, via sat-protocol
 ;;;;   tracks.lisp     SOURCE-VOICES, MELODY-VOICE, the track -> part mapping
@@ -25,6 +25,7 @@
 ;;;;                      which ignores that entry.
 ;;;;   INVALID-POSITION   export: an :UNFOLD entry whose bar is not a bar of the
 ;;;;                      score; ERROR inside CONTINUE, which drops the entry.
+;;;;   SCORE-ERROR        export: whatever UNFOLD signals (a D.S. with no segno).
 ;;;;   SCORE-FORMAT-ERROR import, FORMAT :MIDI: a MIDI-PARSE-ERROR from READ-SMF
 ;;;;                      (CAUSE that condition, POSITION its byte offset),
 ;;;;                      signalled from a handler while midi-protocol's restarts
@@ -46,8 +47,8 @@
 
 Export: SCORE-TO-SMF returns a midi-protocol SMF of format 1 (a conductor track,
 then one track per voice or per part, one channel per voice), EXPORT-MIDI writes
-it. PLAYBACK-ORDER is the unfolded bar order both use. REHEARSAL-MIX and
-REHEARSAL-SET make practice files that bring one voice forward.
+it; repeats, endings and jumps are played as score-protocol's UNFOLD orders them.
+REHEARSAL-MIX and REHEARSAL-SET make practice files that bring one voice forward.
 
 Import: SMF-TO-SCORE builds a score from an SMF, IMPORT-MIDI from bytes, a
 stream or a file. QUANTIZE-ONSETS is the per-beat grid choice (through
@@ -61,8 +62,7 @@ so score-protocol:uncertain-elements is the uncertainty report.")
    #:+chord-text-prefix+ #:+subdivisions+ #:+grid-weights+ #:+tuplet-ratios+
    #:+export-losses+ #:+import-losses+ #:+flag-below+ #:+guess-confidence+
    #:+provenance-backend+
-   ;; Export (playback.lisp, export.lisp, mix.lisp)
-   #:playback-order
+   ;; Export (export.lisp, mix.lisp)
    #:score-to-smf #:export-midi
    #:rehearsal-mix #:rehearsal-set
    ;; Import (quantize.lisp, tracks.lisp, measures.lisp, import.lisp)

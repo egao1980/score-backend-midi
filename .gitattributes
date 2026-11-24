@@ -1,0 +1,5 @@
+* text=auto
+*.lisp text eol=lf
+*.asd text eol=lf
+*.ros text eol=lf
+*.mid binary

@@ -21,6 +21,9 @@ The script is a second implementation of the rules in `src/*.lisp`, in Python, w
 | `sc4-performances.sexp` | for each rendering: the notation (the truth) and the import the rules give | MIT (generated) | the script's quantisation and import rules |
 | `sc4-ensemble.mid`, `sc4-ensemble-format0.mid`, `sc4-strings.mid`, `sc4-lyrics.mid`, `sc4-karaoke.mid`, `sc4-meta.mid`, `sc4-spell-c-sharp.mid`, `sc4-spell-g-flat.mid`, `sc4-spell-ambiguous.mid`, `sc4-key-mismatch.mid` | import cases designed for these tests: tracks and channels, instrument names, percussion, lyric and karaoke conventions, meta events and hints, spelling with and without a key | MIT (generated) | written with mido; notes in `sc4-import-facts.sexp` |
 | `sc4-import-facts.sexp` | the notes of those files, and for the spelling files the key music21 detects | MIT (generated) | the script; music21 `KrumhanslKessler` |
+| `sc41-perf-ode.mid` | 0.1.1 (issue #4): a humanised performance of the *Ode to Joy* theme (Beethoven, 1824; public domain), bars 1-4 and 9-12 in D major, bar 7 varied with a triplet F#4 G4 G#4 rising to A4; format 0, no time or key signature | MIT (generated) | a seeded linear congruential generator (below), written with mido |
+| `sc41-late-last-note.mid` | 0.1.1 (issue #3): four notes in one bar of 4/4, the last played so late that its start snaps to the barline, with a lyric each | MIT (generated) | written with mido |
+| `sc41-facts.sexp` | the notes of those files and the import the rules give them (start, end, key, quantisation confidence) | MIT (generated) | the script's quantisation and import rules, late starts included |
 
 ## The performances
 
@@ -49,6 +52,10 @@ The export plays score-protocol's `UNFOLD` view (SC1, 0.2.0). To derive the fact
 - **Velocity.** Ours is the `+DYNAMIC-VELOCITIES+` table along the playback order. music21's realised volume saturates at ff (ff and fff both give 127), so velocities are checked against the table and by hand, not against music21.
 - **Time signatures of short bars.** A pickup or a short last bar is written with a signature of its actual length (1/4 before 3/4); music21 writes the notated meter. This is what lets the import rebuild the pickup.
 - **Units.** Offsets are whole notes; music21's are quarter notes; ticks are quarter-note based (480 per quarter by default).
+
+## The 0.1.1 performance
+
+`sc41-perf-ode.mid` is the performance that issue #4 describes. Each note is played up to 20 ms early or late, held for 90% of its value, at quarter = 100 (600 ms) and 480 ticks per quarter. The values come from x ← (1103515245 x + 12345) mod 2^31, seeded with 1824. Two values are drawn per note: (x >> 8) mod 41 - 20 is the jitter in ms (its absolute value on the first note), then 70 + (x >> 8) mod 21 is the velocity. Ticks are rounded half to even. The script stops unless the jitters begin +17 +5 -7 -17 and end +7 -9 -5 +10 +2 +19 -10 +9 +4, as in the issue's report, and unless every onset snaps to its written position. The spelling expectations are the written pitches. The confidence rows of `tests/sc41-test.lisp` are by hand from the rules in `src/import.lisp` and music-theory's `spell.lisp`.
 
 ## Key detection
 

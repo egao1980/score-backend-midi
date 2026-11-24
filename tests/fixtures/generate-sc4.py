@@ -22,6 +22,8 @@ Outputs (tests/fixtures/PROVENANCE.md has the table):
   sc4-perf-*.mid         humanised renderings of ten melodies (below)
   sc4-performances.sexp  their notation (ground truth) and the import's result
   sc4-*.mid (import)     hand-designed import files; facts in sc4-import-facts.sexp
+  sc41-*.mid             0.1.1: the performance of issue #4 and a late last note
+                         (issue #3); facts and the rules' import in sc41-facts.sexp
 --renumber rewrites the sc4-*.sexp fixture scores with ids in document order
 (as generate-sc0.py does in score-protocol); without it the script checks them.
 --dump reads SMFs concatenated on stdin and prints, for each, what mido reads:
@@ -1231,6 +1233,11 @@ def import_performance(rendered, meter, total_end_tick):
     assert not exact
     starts = sorted({w(n[0]) for n in rendered})
     choices, positions, confidences = quantize(starts, beats)
+    # 0.1.1 (issue #3): a start snapped to E, which no bar holds, moves back to
+    # the last point of the last beat's grid below E, its q at most 1/2.
+    late = grid_points(beats[-1], choices[-1])[-2]
+    confidences = [min(q, F(1, 2)) if p == E else q for p, q in zip(positions, confidences)]
+    positions = [late if p == E else p for p in positions]
     snapped = dict(zip(starts, positions))
     qconf = dict(zip(starts, confidences))
     notes = [[snapped[w(on)], w(off), key, qconf[w(on)]] for on, off, key, _ in rendered]
@@ -1490,6 +1497,105 @@ def import_fixtures():
                "SC4 import fixtures: the notes each .mid holds (whole notes, MIDI keys).", facts)
 
 
+# --- 0.1.1 import fixtures (sc41-*) ------------------------------------------
+# The performance of issue #4: the "Ode to Joy" theme (Beethoven, 1824), bars
+# 1-4 and 9-12 in D major, bar 7 varied with a triplet F#4 G4 G#4 rising to A4,
+# played at quarter = 100 with onsets up to 20 ms off, notes held for 90%, from
+# a seeded linear congruential generator; format 0 with a tempo and a program
+# change, no time or key signature. And a file whose last note starts so late
+# that it snaps to the end of the last bar (issue #3, item 1).
+
+ODE = ["F#4 F#4 G4 A4", "A4 G4 F#4 E4", "D4 D4 E4 F#4", "F#4/3:8 E4/1:8 E4/2",
+       "E4 E4 F#4 D4", "E4 F#4/1:8 G4/1:8 F#4 D4", "E4 F#4/1:12 G4/1:12 G#4/1:12 A4 F#4",
+       "D4 E4 A3/2"]
+
+
+def ode_notes():
+    """((onset duration pitch) ...): a pitch, then /n:d for n/d of a whole note,
+    /n for 1/n, else a quarter."""
+    out, onset = [], F(0)
+    for bar in ODE:
+        for token in bar.split():
+            pitch, _, dur = token.partition("/")
+            if not dur:
+                d = F(1, 4)
+            elif ":" in dur:
+                n, den = dur.split(":")
+                d = F(int(n), int(den))
+            else:
+                d = F(1, int(dur))
+            out.append((onset, d, pitch))
+            onset += d
+    return out
+
+
+def ode_performance():
+    """((onset duration pitch on off velocity jitter) ...): x <- (1103515245 x +
+    12345) mod 2^31 from 1824; per note the jitter (x >> 8) mod 41 - 20 ms (its
+    absolute value on the first note), then the velocity 70 + (x >> 8) mod 21;
+    600 ms per quarter, 480 ticks per quarter, both rounded half to even."""
+    x = 1824
+    rows = []
+    for onset, d, pitch in ode_notes():
+        x = (1103515245 * x + 12345) % 2 ** 31
+        jitter = ((x >> 8) % 41) - 20
+        if onset == 0:
+            jitter = abs(jitter)
+        ms = onset * 4 * 600 + jitter
+        on = round(ms * 480 / F(600))
+        off = on + round(F(9, 10) * d * 4 * 480)
+        x = (1103515245 * x + 12345) % 2 ** 31
+        rows.append((onset, d, pitch, on, off, 70 + ((x >> 8) % 21), jitter))
+    return rows
+
+
+def sc41_fixtures():
+    import mido
+    facts = []
+    rows = ode_performance()
+    jitters = [r[6] for r in rows]
+    if jitters[:4] != [17, 5, -7, -17] or jitters[-9:] != [7, -9, -5, 10, 2, 19, -10, 9, 4]:
+        raise SystemExit(f"sc41-perf-ode.mid: the generator drifted: {jitters}")
+    events = [(0, meta("set_tempo", tempo=600000)),
+              (0, mido.Message("program_change", channel=0, program=0))]
+    for _, _, pitch, on, off, vel, _ in rows:
+        events.append((on, mido.Message("note_on", channel=0, note=midi_of(pitch), velocity=vel)))
+        events.append((off, mido.Message("note_off", channel=0, note=midi_of(pitch), velocity=64)))
+    write_mid("sc41-perf-ode.mid", [events], fmt=0)
+    rendered = [[on, off, midi_of(pitch), vel] for _, _, pitch, on, off, vel, _ in rows]
+    result, E, _, _ = import_performance(rendered, "4/4", max(r[4] for r in rows))
+    if [r[0] for r in result] != [r[0] for r in rows]:
+        raise SystemExit("sc41-perf-ode.mid: an onset doesn't snap to its written position")
+    facts.append(["sc41-perf-ode.mid", Kw("end"), E,
+                  Kw("truth"), [[a, a + d, p, midi_of(p)] for a, d, p, *_ in rows],
+                  Kw("import"), [[a, z, k, q] for a, z, k, q in result]])
+    # The late last note: F4, written on beat 4, played 0.92 of a beat late and
+    # short, ends before the barline; its start snaps to the end of the bar.
+    late = [(0, 400, "C4", "one"), (480, 880, "D4", "two"), (960, 1360, "E4", "three"),
+            (1882, 1910, "F4", "four")]
+    melody = [(0, meta("track_name", name="Line"))]
+    for on, off, pitch, text in late:
+        melody += [(on, mido.Message("note_on", channel=0, note=midi_of(pitch), velocity=80)),
+                   (on, meta("lyrics", text=text)),
+                   (off, mido.Message("note_off", channel=0, note=midi_of(pitch), velocity=0))]
+    write_mid("sc41-late-last-note.mid",
+              [[(0, meta("time_signature", numerator=4, denominator=4, clocks_per_click=24,
+                         notated_32nd_notes_per_beat=8)), (0, meta("key_signature", key="C"))],
+               melody])
+    result, E, choices, beats = import_performance([[on, off, midi_of(p), 80] for on, off, p, _ in late],
+                                                   "4/4", 1910)
+    _, positions, _ = quantize(sorted({F(on, 1920) for on, *_ in late}), beats)
+    if positions[-1] != E or result[-1][0] != F(3, 4):
+        raise SystemExit("sc41-late-last-note.mid: the last start doesn't snap to the end")
+    facts.append(["sc41-late-last-note.mid", Kw("end"), E,
+                  Kw("notes"), [[on, off, midi_of(p), text] for on, off, p, text in late],
+                  Kw("import"), [[a, z, k, q] for a, z, k, q in result]])
+    write_form("sc41-facts.sexp",
+               "0.1.1 import fixtures: (file :end E :truth ((start end pitch key) ...) or :notes "
+               "((on-tick off-tick key lyric) ...), :import ((start end key q) ...)), q the "
+               "quantisation confidence the rules give each note.", facts)
+
+
 # --- main ------------------------------------------------------------------
 
 EXPORT_FIXTURES = ["sc0-carol-6-8", "sc0-chords-under-rests", "sc0-jumps", "sc0-key-change",
@@ -1618,6 +1724,7 @@ def main():
         print(f"{row[0]} {row[1]}: {len(row[9])} notes, {row[10]} wrong, {row[11]} flagged, "
               f"{row[12]} wrong but unflagged")
     import_fixtures()
+    sc41_fixtures()
 
 
 if __name__ == "__main__":

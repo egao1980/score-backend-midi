@@ -61,7 +61,7 @@ so score-protocol:uncertain-elements is the uncertainty report.")
    #:+default-volume+ #:+default-pan+ #:+dynamic-velocities+
    #:+chord-text-prefix+ #:+subdivisions+ #:+grid-weights+ #:+tuplet-ratios+
    #:+export-losses+ #:+import-losses+ #:+flag-below+ #:+guess-confidence+
-   #:+provenance-backend+
+   #:+provenance-backend+ #:+spelling-rule-confidence+
    ;; Export (export.lisp, mix.lisp)
    #:score-to-smf #:export-midi
    #:rehearsal-mix #:rehearsal-set

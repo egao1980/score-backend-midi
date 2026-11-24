@@ -71,6 +71,15 @@ signalled (import.lisp, Losses).")
 (defparameter +provenance-backend+ "score-backend-midi"
   "PROVENANCE-BACKEND of every imported element (its SOURCE is :MIDI).")
 
+(defparameter +spelling-rule-confidence+
+  '((:s0 . :copied) (:s1 . 1) (:s2 . 1) (:s3 . :copied) (:s4 . 1)
+    (:s5 . :before) (:s6 . :ambiguity) (:s7 . :ambiguity))
+  "Per music-theory spelling rule (the third value of SPELL-SEQUENCE, :S0 ..
+:S7), where an imported note's spelling confidence comes from (import.lisp,
+Spelling confidence): a number is the confidence; :COPIED the confidence of the
+note whose spelling the rule takes; :BEFORE that of the note just before;
+:AMBIGUITY 1 minus the note's ambiguity.")
+
 (defparameter +guess-confidence+ 1/2
   "The confidence of a categorical guess: a default meter, a hint that
 disagrees with the file, an unprefixed chord symbol, a lyric off its note, a

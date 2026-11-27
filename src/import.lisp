@@ -112,7 +112,14 @@
 ;;;; music-theory's N, so in minor the raised sixth counts too (A minor 64 66
 ;;;; 68 69, E4 F#4 G#4 A4: every sp 1; 0.1.0 gave F#4 25/48).
 ;;;;
-;;;; Confidence. A note event: min(q, sp) of its note. A chord event: the least
+;;;; Shared with NOTES-TO-SCORE (0.2.0, notes.lisp): the snapping of starts
+;;;; (%SNAP-STARTS), the end rules (%SNAPPED-END), Events, Spelling, Confidence,
+;;;; and the building of the score with its ids and guesses (%FINISH-SCORE).
+;;;; 0.2.0 moved them into those functions without changing what they do.
+;;;;
+;;;; Confidence. A note event: min(q, sp) of its note (%LINE-CONFIDENCE: the
+;;;; least of q, sp, pc and c in +NOTE-GUESSES+ order, where an SMF note has pc
+;;;; and c 1, so "quantization" wins a tie as below). A chord event: the least
 ;;;; q of the notes that start at its onset, or of all its notes when none
 ;;;; does. A chord note: its note's sp. Rests: NIL. Lyrics: 1 when the lyric's
 ;;;; tick is its note's start tick, else +GUESS-CONFIDENCE+. Chord-symbol
@@ -191,8 +198,11 @@
 (defstruct (%line (:constructor %make-line (key start end tick q)) (:copier nil) (:predicate nil))
   "A note of an imported voice after quantisation: KEY, START and END (whole
 notes), the original start TICK, its quantisation confidence Q, then its PITCH
-and spelling confidence SP, and its PIECES (%PIECEs, in time order)."
-  key start end tick q pitch sp (pieces '()))
+and spelling confidence SP, its pitch confidence PC and input confidence C (1
+for an SMF note; NOTES-TO-SCORE sets them, notes.lisp), its TIME-RANGE (NIL, or
+the (onset offset) seconds of a timed event, notes.lisp), and its PIECES
+(%PIECEs, in time order)."
+  key start end tick q pitch sp (pc 1) (c 1) (time-range nil) (pieces '()))
 
 (defstruct (%piece (:constructor %make-piece (line event)) (:copier nil) (:predicate nil))
   "One tied piece of a %LINE: the %EV it sounds in, and NEXT, the next piece."
@@ -279,6 +289,37 @@ most +GUESS-CONFIDENCE+ (Quantisation, Late starts)."
             (mapcar (lambda (p q) (if (= p e) (min q +guess-confidence+) q))
                     positions confidences))))
 
+(defun %snap-starts (starts beats e subdivisions backend)
+  "(values SNAPPED QS CHOICES) for STARTS (whole notes, in any order, repeats
+allowed): the distinct starts in ascending order through QUANTIZE-ONSETS, late
+starts moved back (Quantisation, Snapped); SNAPPED and QS have one entry per
+element of STARTS, CHOICES one per beat. Shared with NOTES-TO-SCORE."
+  (let ((distinct (%distinct-ascending starts)))
+    (multiple-value-bind (choices positions confidences)
+        (quantize-onsets distinct beats :subdivisions subdivisions :backend backend)
+      (when (member e positions)
+        (setf (values positions confidences)
+              (%late-starts positions confidences beats choices e)))
+      (values (mapcar (lambda (start) (nth (position start distinct) positions)) starts)
+              (mapcar (lambda (start) (nth (position start distinct) confidences)) starts)
+              choices))))
+
+(defun %snapped-end (start raw-end next single beats choices e)
+  "The end of a snapped note that starts at START (Quantisation): RAW-END, in a
+SINGLE-line voice first cut to NEXT (the next snapped start, or E), snapped to
+the grid its beat chose (an end at E stays E); when that is at or before START,
+START plus the step of START's beat grid, cut at NEXT in a single-line voice.
+Shared with NOTES-TO-SCORE."
+  (let ((end (if single (min raw-end next) raw-end)))
+    (unless (= end e)
+      (let ((i (%beat-index end beats)))
+        (setf end (%snap end (nth i beats) (nth i choices)))))
+    (when (<= end start)
+      (let* ((i (%beat-index start beats))
+             (stepped (+ start (%grid-step (nth i beats) (nth i choices)))))
+        (setf end (if single (min stepped next) stepped))))
+    end))
+
 (defun %voice-lines (notes beats e division quantize subdivisions backend)
   "(values LINES CHOICES): the voice's NOTES quantised (Quantisation), and the
 grid choice of every beat (NIL with QUANTIZE NIL)."
@@ -297,32 +338,20 @@ grid choice of every beat (NIL with QUANTIZE NIL)."
                      (values (quantize-onsets (%distinct-ascending (append starts ends))
                                               beats :exact t :subdivisions subdivisions
                                               :backend backend))))
-        (let ((distinct (%distinct-ascending starts)))
-          (multiple-value-bind (choices positions confidences)
-              (quantize-onsets distinct beats :subdivisions subdivisions :backend backend)
-            (when (member e positions)
-              (setf (values positions confidences)
-                    (%late-starts positions confidences beats choices e)))
-            (let* ((snapped (mapcar (lambda (start) (nth (position start distinct) positions)) starts))
-                   (qs (mapcar (lambda (start) (nth (position start distinct) confidences)) starts))
-                   (single (= (length snapped) (length (remove-duplicates snapped)))))
-              (values
-               (%merge-lines
-                (loop for note in notes
-                      for start in snapped
-                      for q in qs
-                      for raw-end in ends
-                      collect (let* ((next (%next-start snapped start e))
-                                     (end (if single (min raw-end next) raw-end)))
-                                (unless (= end e)
-                                  (let ((i (%beat-index end beats)))
-                                    (setf end (%snap end (nth i beats) (nth i choices)))))
-                                (when (<= end start)
-                                  (let* ((i (%beat-index start beats))
-                                         (stepped (+ start (%grid-step (nth i beats) (nth i choices)))))
-                                    (setf end (if single (min stepped next) stepped))))
-                                (%make-line (%note-key note) start end (%note-start note) q))))
-               choices)))))))
+        (multiple-value-bind (snapped qs choices)
+            (%snap-starts starts beats e subdivisions backend)
+          (let ((single (= (length snapped) (length (remove-duplicates snapped)))))
+            (values
+             (%merge-lines
+              (loop for note in notes
+                    for start in snapped
+                    for q in qs
+                    for raw-end in ends
+                    collect (%make-line (%note-key note) start
+                                        (%snapped-end start raw-end (%next-start snapped start e)
+                                                      single beats choices e)
+                                        (%note-start note) q)))
+             choices))))))
 
 ;;; Spelling ---------------------------------------------------------------------------
 
@@ -425,6 +454,15 @@ OFFSET are multiples of 1/128, else one value."
                   lines))
     ev))
 
+(defun %line-confidence (line)
+  "(values CONFIDENCE WHAT) of a note event of LINE (Confidence): the least of
+its Q, SP, PC and C, and the +NOTE-GUESSES+ entry of the first of them that is
+least. For an SMF note PC and C are 1, so this is min(q, sp), \"quantization\"
+on a tie."
+  (let* ((parts (list (%line-q line) (%line-sp line) (%line-pc line) (%line-c line)))
+         (least (reduce #'min parts)))
+    (values least (nth (position least parts :test #'=) +note-guesses+))))
+
 (defun %voice-measures (lines bars beats choices)
   "One list of %EVs per bar for the voice's LINES (Events)."
   (let* ((tuplets (%tuplet-beats beats choices))
@@ -474,9 +512,9 @@ OFFSET are multiples of 1/128, else one value."
         (let ((lines (mapcar #'%piece-line (%ev-pieces ev))))
           (case (%ev-kind ev)
             (:note
-             (let ((line (first lines)))
-               (setf (%ev-confidence ev) (min (%line-q line) (%line-sp line))
-                     (%ev-what ev) (if (<= (%line-q line) (%line-sp line)) "quantization" "spelling"))))
+             (multiple-value-bind (confidence what) (%line-confidence (first lines))
+               (setf (%ev-confidence ev) confidence
+                     (%ev-what ev) what)))
             (:chord
              (let ((starting (remove-if-not (lambda (line) (= (%ev-onset ev) (%line-start line))) lines)))
                (setf (%ev-confidence ev) (reduce #'min (or starting lines) :key #'%line-q)
@@ -662,11 +700,18 @@ voice isn't imported (Lyrics)."
 
 ;;; Building the score -------------------------------------------------------------------------
 
-(defun %build-score (metadata bars parts anchors tie-end)
+(defun %build-score (metadata bars parts anchors tie-end &key (source :midi))
   "The score of the drafts, every element minted by MAKE-SCORE. TIE-END maps a
-%PIECE to the string its tie's END holds. Constructors only: no condition but
-theirs."
-  (let ((provenance (score-protocol:make-provenance :source :midi :backend +provenance-backend+)))
+%PIECE to the string its tie's END holds. Every provenance has SOURCE and
++PROVENANCE-BACKEND+; a note or chord note whose %LINE has a TIME-RANGE, and a
+measure whose %BAR has one, carry it too (NOTES-TO-SCORE; SMF imports have
+none). Constructors only: no condition but theirs."
+  (let* ((provenance (score-protocol:make-provenance :source source :backend +provenance-backend+))
+         (ranged (lambda (range)
+                   (if range
+                       (score-protocol:make-provenance :source source :backend +provenance-backend+
+                                                       :time-range range)
+                       provenance))))
     (labels ((tie (piece)
                (let ((next (%piece-next piece)))
                  (and next (score-protocol:make-tie :end (funcall tie-end next)
@@ -690,14 +735,16 @@ theirs."
                     (score-protocol:make-note-event
                      :pitch (%line-pitch line) :duration (%ev-duration ev) :tuplet (%ev-tuplet ev)
                      :tie (tie piece) :lyrics (lyrics ev)
-                     :provenance provenance :confidence (%ev-confidence ev))))
+                     :provenance (funcall ranged (%line-time-range line))
+                     :confidence (%ev-confidence ev))))
                  (:chord
                   (score-protocol:make-chord-event
                    :notes (mapcar (lambda (piece)
                                     (let ((line (%piece-line piece)))
                                       (score-protocol:make-chord-note
                                        :pitch (%line-pitch line) :tie (tie piece)
-                                       :provenance provenance :confidence (%line-sp line))))
+                                       :provenance (funcall ranged (%line-time-range line))
+                                       :confidence (%line-sp line))))
                                   (%ev-pieces ev))
                    :duration (%ev-duration ev) :tuplet (%ev-tuplet ev) :lyrics (lyrics ev)
                    :provenance provenance :confidence (%ev-confidence ev))))))
@@ -716,7 +763,8 @@ theirs."
                                         :offset (%mark-offset mark) :tempo (%mark-tempo mark)
                                         :provenance provenance :confidence (%mark-confidence mark)))
                                      (%bar-tempo bar))
-                      :provenance provenance :confidence (%bar-confidence bar)))
+                      :provenance (funcall ranged (%bar-time-range bar))
+                      :confidence (%bar-confidence bar)))
        :parts
        (mapcar (lambda (part)
                  (destructuring-bind (plan . drafts) part
@@ -785,6 +833,22 @@ below +FLAG-BELOW+, in document order (Losses and guesses)."
                     (score-protocol:lyric "lyric")
                     (score-protocol:part "melody")))))
 
+(defun %finish-score (metadata bars parts anchors &key (source :midi))
+  "The score of the drafts (Provenance and ids), then LOW-CONFIDENCE-GUESS for
+every element below +FLAG-BELOW+ (Losses and guesses). PARTS is ((plan .
+drafts) ...). Shared with NOTES-TO-SCORE."
+  ;; Ids: MAKE-SCORE mints them in an id-less build; a second build gives every
+  ;; tie the id its target got in the first.
+  (let* ((whats (make-hash-table :test 'equal))
+         (rough (%build-score metadata bars parts anchors (constantly "x") :source source))
+         (ids (%minted-note-ids parts rough whats))
+         (score (%build-score metadata bars parts anchors
+                              (lambda (piece) (gethash piece ids)) :source source)))
+    (assert (= (score-protocol:score-id-counter rough) (score-protocol:score-id-counter score))
+            () "The two builds of one draft minted different ids.")
+    (%signal-guesses score whats (and bars (%bar-what (first bars))))
+    score))
+
 ;;; Entry points ----------------------------------------------------------------------------------
 
 (defun %parts-p (object)
@@ -847,17 +911,7 @@ below +FLAG-BELOW+, in document order (Losses and guesses)."
           (when (some #'%percussion-p notes)
             (push "percussion" (car losses)))
           (%warn-losses (car losses) +import-losses+)
-          ;; Ids: MAKE-SCORE mints them in an id-less build; a second build gives
-          ;; every tie the id its target got in the first.
-          (let* ((whats (make-hash-table :test 'equal))
-                 (rough (%build-score metadata bars parts anchors (constantly "x")))
-                 (ids (%minted-note-ids parts rough whats))
-                 (score (%build-score metadata bars parts anchors
-                                      (lambda (piece) (gethash piece ids)))))
-            (assert (= (score-protocol:score-id-counter rough) (score-protocol:score-id-counter score))
-                    () "The two builds of one draft minted different ids.")
-            (%signal-guesses score whats (and bars (%bar-what (first bars))))
-            score))))))
+          (%finish-score metadata bars parts anchors))))))
 
 (defun import-midi (source &rest keys)
   "Read SOURCE with midi-protocol's READ-SMF, then SMF-TO-SCORE with KEYS."

@@ -1,11 +1,11 @@
 (defsystem "score-backend-midi"
-  :version "0.1.1"
-  :description "Standard MIDI File export and import for score-protocol: tracks and channels per voice, tempo map, lyrics, chord text, unfolded repeats, rehearsal mixes; quantisation through sat-protocol, spelling through music-theory"
+  :version "0.2.0"
+  :description "Standard MIDI File export and import for score-protocol: tracks and channels per voice, tempo map, lyrics, chord text, unfolded repeats, rehearsal mixes; quantisation through sat-protocol, spelling through music-theory; timed note events (onsets in seconds, pitches with cents) to a score"
   :author "egao1980"
   :license "MIT"
-  :depends-on ((:version "score-protocol" "0.2.0")
+  :depends-on ((:version "score-protocol" "0.3.0")
                (:version "midi-protocol" "0.1.0")
-               (:version "music-theory" "0.5.2")
+               (:version "music-theory" "0.6.0")
                (:version "sat-protocol" "0.2.0")
                "sat-backend-cdcl"
                ;; score-protocol returns FSet seqs; read through fset: directly
@@ -19,7 +19,9 @@
                (:file "quantize")
                (:file "tracks")
                (:file "measures")
-               (:file "import"))
+               (:file "import")
+               (:file "tempo")
+               (:file "notes"))
   :in-order-to ((test-op (test-op "score-backend-midi/tests"))))
 
 (defsystem "score-backend-midi/tests"
@@ -35,6 +37,8 @@
                (:file "performance-test")
                (:file "spelling-test")
                (:file "sc41-test")
+               (:file "tempo-test")
+               (:file "notes-test")
                (:file "mido-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)

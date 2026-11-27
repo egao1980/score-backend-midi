@@ -69,12 +69,77 @@
 
 (in-package #:score-backend-midi)
 
-(defun %sc6-pending (name)
-  "The stub body of the SC6 contract: NAME is not implemented yet."
-  (error "~S is not implemented yet (SC6 contract, score-backend-midi#7)" name))
+(defun %real-list-p (object)
+  "ESTIMATE-TEMPO's ONSETS: a proper list of reals."
+  (%proper-list-of-p object #'realp))
+
+(defun %pair-lags (times)
+  "The lags tj - ti of every pair i < j of TIMES (distinct, ascending), as a
+sorted simple-vector."
+  (sort (coerce (loop for (a . more) on times
+                      nconc (mapcar (lambda (b) (- b a)) more))
+                'simple-vector)
+        #'<))
+
+(defun %first-above (lags x)
+  "The index of the first element of LAGS (a sorted simple-vector) greater than
+X, or its length."
+  (let ((low 0) (high (length lags)))
+    (loop while (< low high)
+          do (let ((middle (floor (+ low high) 2)))
+               (if (> (svref lags middle) x)
+                   (setf high middle)
+                   (setf low (1+ middle)))))
+    low))
+
+(defun %salience (lags period)
+  "A(T) for the beat PERIOD (Salience): the kernel sum over LAGS, a sorted
+simple-vector. Only the lags strictly within h of PERIOD have a nonzero kernel,
+so only they are summed; with none the result is the integer 0."
+  (let ((h +tempo-kernel+) (high (+ period +tempo-kernel+)))
+    (loop for i from (%first-above lags (- period h)) below (length lags)
+          for lag = (svref lags i)
+          while (< lag high)
+          sum (- 1 (/ (abs (- lag period)) h)))))
+
+(defun %tempo-prior (bpm beat-unit)
+  "prior(T) (Prior): 1 / (1 + x^2), x = (r - 1/r) / 2, r = 4 BEAT-UNIT T / T0."
+  (let* ((r (/ (* 4 beat-unit bpm) +tempo-prior-center+))
+         (x (/ (- r (/ r)) 2)))
+    (/ (+ 1 (* x x)))))
+
+(defun %refined-period (lags period)
+  "PERIOD after the passes of Refinement over LAGS, one per K of +TEMPO-SCALES+:
+each the weighted least-squares period through the origin of the pairs within h
+of a multiple k <= K of the period the pass started from."
+  (dolist (most +tempo-scales+ period)
+    (let ((numerator 0) (denominator 0))
+      (loop for lag across lags
+            for k = (floor (+ (/ lag period) 1/2))
+            for d = (abs (- lag (* k period)))
+            when (and (<= 1 k most) (< d +tempo-kernel+))
+              do (let ((w (- 1 (/ d +tempo-kernel+))))
+                   (incf numerator (* w k lag))
+                   (incf denominator (* w k k))))
+      (when (plusp denominator)
+        (setf period (/ numerator denominator))))))
 
 (defun estimate-tempo (onsets &key (beat-unit 1/4))
   "The tempo of ONSETS (seconds) in beats of BEAT-UNIT, and the ranking of the
 candidates (file header): (values tempo ranking)."
-  (declare (ignore onsets beat-unit))
-  (%sc6-pending 'estimate-tempo))
+  (check-type onsets (satisfies %real-list-p) "a proper list of reals")
+  (check-type beat-unit (rational (0)) "a positive rational")
+  (let* ((lags (%pair-lags (%distinct-ascending (mapcar #'rational onsets))))
+         (ranking (stable-sort
+                   (loop for bpm from (first +tempo-range+) to (second +tempo-range+)
+                         collect (cons bpm (* (%salience lags (/ 60 bpm))
+                                              (%tempo-prior bpm beat-unit))))
+                   #'> :key #'cdr))
+         (best (first ranking))
+         (bpm (if (plusp (cdr best))
+                  (car best)
+                  (/ +tempo-prior-center+ (* 4 beat-unit))))
+         (period (%refined-period lags (/ 60 bpm))))
+    (values (music-theory:make-tempo :bpm (/ (floor (+ (/ 6000 period) 1/2)) 100)
+                                     :beat-unit beat-unit)
+            ranking)))

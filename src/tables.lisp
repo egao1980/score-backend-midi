@@ -83,7 +83,42 @@ note whose spelling the rule takes; :BEFORE that of the note just before;
 (defparameter +guess-confidence+ 1/2
   "The confidence of a categorical guess: a default meter, a hint that
 disagrees with the file, an unprefixed chord symbol, a lyric off its note, a
-melody chosen among several candidates.")
+melody chosen among several candidates; for timed notes (notes.lisp) also an
+estimated tempo, an assumed downbeat, a key hint the take doesn't fit.")
+
+(defparameter +note-guesses+ '("quantization" "spelling" "pitch" "input")
+  "The WHAT of a note event's confidence, in tie order: the first of its
+quantisation q, spelling sp, pitch pc and input c confidences that is least
+(import.lisp, Confidence; pc and c are 1 for an SMF note, notes.lisp).")
+
+;;; Timed notes (0.2.0, notes.lisp and tempo.lisp) -------------------------------
+
+(defparameter +tempo-range+ '(40 200)
+  "ESTIMATE-TEMPO's candidates: every integer bpm from the first to the second,
+in beats of the BEAT-UNIT (tempo.lisp, Candidates).")
+
+(defparameter +tempo-kernel+ 1/20
+  "The half-width h, in seconds, of ESTIMATE-TEMPO's triangular kernel: a lag
+within h of a beat period counts 1 - |lag - period| / h (tempo.lisp).")
+
+(defparameter +tempo-prior-center+ 100
+  "The centre of ESTIMATE-TEMPO's prior, in quarter notes per minute (2.4 s per
+whole note): 100 for BEAT-UNIT 1/4, 66.67 for 3/8 (tempo.lisp, Prior).")
+
+(defparameter +tempo-scales+ '(1 2 4 8 16)
+  "The largest beat multiple K of each refinement pass of ESTIMATE-TEMPO, in
+order (tempo.lisp, Refinement).")
+
+(defparameter +alignment-rounds+ 8
+  "The most quantisations NOTES-TO-SCORE makes to fit the origin, and an
+estimated tempo, to the grid (notes.lisp, Alignment).")
+
+(defparameter +legato-gap+ 1/8
+  "A rest shorter than this (whole notes: an eighth note) between two notes of
+NOTES-TO-SCORE is absorbed into the note before it (notes.lisp, Ends).")
+
+(defparameter +notes-losses+ '("notes")
+  "LOSSY-CONVERSION WHAT strings of NOTES-TO-SCORE (notes.lisp, Monophony).")
 
 (defparameter +flag-below+ 0.8
   "Imported elements with a confidence below this signal LOW-CONFIDENCE-GUESS:

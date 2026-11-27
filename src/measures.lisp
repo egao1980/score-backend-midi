@@ -131,9 +131,10 @@ tick, the last of several at one tick."
   "A laid bar (Bars): START and LENGTH in whole notes, the SIGNATURE meter it was
 laid from and its RUN; then the measure's METER, TIME and LENGTH-SLOT, KEY,
 PICKUP-P, TEMPO marks (%MARKs), REHEARSAL text, CONFIDENCE and the WHAT of
-that confidence."
+that confidence, and its TIME-RANGE (NIL for an SMF; NOTES-TO-SCORE sets the
+bar's seconds, notes.lisp)."
   start length signature run meter time length-slot key pickup-p tempo rehearsal
-  confidence what)
+  confidence what time-range)
 
 (defstruct (%mark (:constructor %make-mark (offset tempo confidence))
                   (:copier nil) (:predicate nil))

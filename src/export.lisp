@@ -184,12 +184,12 @@
 (defun %grace-event-p (event)
   (and (typep event 'score-protocol:sounding-event) (score-protocol:event-grace event) t))
 
-(defun %warn-losses (losses table)
-  "WARN LOSSY-CONVERSION (FORMAT :MIDI) once for each string of TABLE in LOSSES,
-in TABLE order."
+(defun %warn-losses (losses table &key (format :midi) (direction :to))
+  "WARN LOSSY-CONVERSION (FORMAT, default :MIDI; DIRECTION, default :TO) once for
+each string of TABLE in LOSSES, in TABLE order."
   (dolist (what table)
     (when (member what losses :test #'string=)
-      (warn 'score-protocol:lossy-conversion :format :midi :what what))))
+      (warn 'score-protocol:lossy-conversion :format format :direction direction :what what))))
 
 ;;; Arguments ------------------------------------------------------------------
 

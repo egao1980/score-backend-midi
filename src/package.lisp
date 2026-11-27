@@ -12,6 +12,9 @@
 ;;;;   tracks.lisp     SOURCE-VOICES, MELODY-VOICE, the track -> part mapping
 ;;;;   measures.lisp   the imported measure map: meter, key, tempo, hints
 ;;;;   import.lisp     SMF-TO-SCORE, IMPORT-MIDI: events, spelling, text, confidence
+;;;;   tempo.lisp      ESTIMATE-TEMPO: a beat from onsets in seconds (0.2.0, SC6)
+;;;;   notes.lisp      NOTES-TO-SCORE, NOTES-FIT: timed note events, as a
+;;;;                   transcriber gives them, to a score (0.2.0, SC6)
 ;;;;
 ;;;; Conditions. score-protocol owns the types; this backend signals them and
 ;;;; defines none of its own (CLHS 9):
@@ -26,6 +29,8 @@
 ;;;;   INVALID-POSITION   export: an :UNFOLD entry whose bar is not a bar of the
 ;;;;                      score; ERROR inside CONTINUE, which drops the entry.
 ;;;;   SCORE-ERROR        export: whatever UNFOLD signals (a D.S. with no segno).
+;;;;   SCORE-FORMAT-ERROR NOTES-TO-SCORE, FORMAT :NOTES: a bad event (USE-VALUE,
+;;;;                      CONTINUE) or no events (USE-VALUE); notes.lisp.
 ;;;;   SCORE-FORMAT-ERROR import, FORMAT :MIDI: a MIDI-PARSE-ERROR from READ-SMF
 ;;;;                      (CAUSE that condition, POSITION its byte offset),
 ;;;;                      signalled from a handler while midi-protocol's restarts
@@ -54,20 +59,34 @@ Import: SMF-TO-SCORE builds a score from an SMF, IMPORT-MIDI from bytes, a
 stream or a file. QUANTIZE-ONSETS is the per-beat grid choice (through
 sat-protocol:minimize); SOURCE-VOICES and MELODY-VOICE expose the track mapping.
 Every imported element has provenance :MIDI; guesses carry a confidence below 1,
-so score-protocol:uncertain-elements is the uncertainty report.")
+so score-protocol:uncertain-elements is the uncertainty report.
+
+Timed notes (0.2.0, slice SC6): NOTES-TO-SCORE builds a one-voice score from
+note events with onsets and offsets in seconds and pitches with cents, as a
+monophonic transcriber gives them; tempo (ESTIMATE-TEMPO), key and tuning
+(music-theory's FIT-KEY) come from hints or are estimated and flagged, and
+quantisation and spelling are SMF-TO-SCORE's.")
   (:export
    ;; Data (tables.lisp)
    #:+default-division+ #:+default-program+ #:+midi-channels+
    #:+default-volume+ #:+default-pan+ #:+dynamic-velocities+
    #:+chord-text-prefix+ #:+subdivisions+ #:+grid-weights+ #:+tuplet-ratios+
    #:+export-losses+ #:+import-losses+ #:+flag-below+ #:+guess-confidence+
-   #:+provenance-backend+ #:+spelling-rule-confidence+
+   #:+provenance-backend+ #:+spelling-rule-confidence+ #:+note-guesses+
+   #:+tempo-range+ #:+tempo-kernel+ #:+tempo-prior-center+ #:+tempo-scales+
+   #:+alignment-rounds+ #:+legato-gap+ #:+notes-losses+
    ;; Export (export.lisp, mix.lisp)
    #:score-to-smf #:export-midi
    #:rehearsal-mix #:rehearsal-set
    ;; Import (quantize.lisp, tracks.lisp, measures.lisp, import.lisp)
    #:quantize-onsets
    #:source-voices #:melody-voice
-   #:smf-to-score #:import-midi))
+   #:smf-to-score #:import-midi
+   ;; Timed notes (tempo.lisp, notes.lisp; 0.2.0)
+   #:estimate-tempo
+   #:notes-to-score
+   #:notes-fit #:notes-fit-p #:make-notes-fit #:notes-fit-origin #:notes-fit-whole
+   #:notes-fit-tempo #:notes-fit-ranking #:notes-fit-rounds #:notes-fit-key-fit
+   #:notes-fit-notes))
 
 (in-package #:score-backend-midi)
